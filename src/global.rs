@@ -2,8 +2,8 @@ use std::{
     hint::cold_path,
     process::exit,
     sync::{
-        atomic::{AtomicBool, Ordering},
         LazyLock,
+        atomic::{AtomicBool, Ordering},
     },
 };
 

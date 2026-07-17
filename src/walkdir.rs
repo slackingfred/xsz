@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque, hash_map::Entry},
     hint::cold_path,
-    io,
+    io::{self, ErrorKind},
     marker::Send,
     os::fd::OwnedFd,
     path::{Path, PathBuf},
@@ -265,12 +265,13 @@ where
             }
             let read_dir = match open(
                 dir_path.as_ref(),
-                OFlags::DIRECTORY | OFlags::NOFOLLOW,
+                OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::NOCTTY | OFlags::NONBLOCK,
                 Mode::RUSR,
             )
             .and_then(Dir::new)
             {
                 Ok(rd) => rd,
+                Err(e) if matches!(e.kind(), ErrorKind::NotFound) => continue,
                 Err(e) => {
                     cold_path();
                     eprintln!("{}: {}", dir_path.display(), e);
