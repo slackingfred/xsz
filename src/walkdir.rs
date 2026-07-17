@@ -32,7 +32,7 @@ pub struct JobChunk {
 impl JobChunk {
     fn from_path(path: impl Into<Box<Path>>) -> Result<Self, io::Error> {
         let path: Box<Path> = path.into();
-        let dev = get_dev(&path);
+        let dev = get_dev(&path)?;
         let fd = open(
             path.as_ref(),
             OFlags::DIRECTORY | OFlags::NOFOLLOW,
@@ -131,7 +131,14 @@ impl WalkDir {
                     None
                 }
             })
-            .filter_map(|p| JobChunk::from_path(p).ok());
+            .filter_map(|p| match JobChunk::from_path(&*p) {
+                Ok(chunk) => Some(chunk),
+                Err(e) => {
+                    cold_path();
+                    eprintln!("{}: {}", p.display(), e);
+                    None
+                }
+            });
         let mut global_joblist = JobMgr::new();
         for chunk in chunks {
             global_joblist.push(chunk);
@@ -290,7 +297,14 @@ where
                     .into_boxed_path();
 
                 if file_type.is_dir() {
-                    let dir_dev = get_dev(&path);
+                    let dir_dev = match get_dev(&path) {
+                        Ok(dev) => dev,
+                        Err(e) => {
+                            cold_path();
+                            eprintln!("{}: {}", path.display(), e);
+                            continue;
+                        }
+                    };
                     if dir_dev == dev {
                         dirs.push_back(path);
                     } else if !config().one_fs {
