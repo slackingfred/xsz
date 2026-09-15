@@ -13,6 +13,9 @@ use kanal::{Receiver, Sender, unbounded};
 
 use crate::global::config;
 
+/// Stack size for executor worker threads.
+const STACK_SIZE: usize = 128 * 1024;
+
 pub struct Executor {
     sender: Sender<Runnable>,
     receiver: Receiver<Runnable>,
@@ -25,7 +28,7 @@ impl Executor {
             let receiver = receiver.clone();
             if let Err(e) = Builder::new()
                 .name(format!("xsz-worker{}", i))
-                .stack_size(4 * 1024)
+                .stack_size(STACK_SIZE)
                 .spawn(move || {
                     while let Ok(r) = receiver.recv() {
                         r.run();
@@ -33,7 +36,13 @@ impl Executor {
                 })
             {
                 cold_path();
-                eprintln!("Failed to spawn worker thread: {}", e);
+                // Don't fail hard: `block_on` still runs tasks on the
+                // calling thread, so we degrade to fewer workers instead
+                // of aborting.  Make the degradation visible though.
+                eprintln!(
+                    "Failed to spawn worker thread {} ({}); running with fewer jobs",
+                    i, e
+                );
             }
         }
         Self { sender, receiver }
@@ -73,11 +82,19 @@ where
                     r.run();
                 }
                 Err(e) => {
+                    // The executor's sender lives in a `static`, so this
+                    // should be unreachable.  If it ever happens, stop
+                    // draining: `recv` would otherwise return `Err` in a
+                    // tight loop and starve `fut` forever.
                     cold_path();
-                    eprintln!("{}", e)
+                    eprintln!("{}", e);
+                    break;
                 }
             }
         }
+        // Never resolve: keep polling `fut` (which `or` polls first) but
+        // stop competing for executor work.
+        std::future::pending().await
     });
     let mut f = pin!(f);
     let thread = current();

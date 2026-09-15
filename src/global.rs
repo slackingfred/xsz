@@ -86,6 +86,13 @@ pub fn get_err() -> Result<(), ()> {
     bool_to_result(global_err().load(Ordering::Relaxed))
 }
 
+/// Claim the right to report the first error.
+///
+/// Returns `Ok(())` exactly once across all threads (the caller that
+/// flipped the flag from `false` to `true`) and `Err(())` for every
+/// later caller.  Callers use `set_err()?` so that the first thread to
+/// hit an error prints it and continues unwinding locally, while the
+/// rest bail out early without producing duplicate messages.
 #[cold]
 pub fn set_err() -> Result<(), ()> {
     cold_path();
