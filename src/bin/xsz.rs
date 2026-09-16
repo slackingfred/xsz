@@ -41,14 +41,18 @@ impl Scale {
         match self {
             Scale::Bytes => format!("{}", num),
             Scale::Human => {
-                let base = 1024;
+                const BASE: u64 = 1024;
+                // `UNITS` covers up to exabytes; cap `cnt` there and let the
+                // threshold saturate so huge inputs cannot overflow the shift.
                 let mut cnt = 0;
-                while num >= base << (cnt * 10) {
+                let mut thresh = BASE;
+                while cnt + 1 < UNITS.len() && num >= thresh {
                     cnt += 1;
+                    thresh = thresh.saturating_mul(BASE);
                 }
                 let bits = cnt * 10;
                 let integer = num >> bits;
-                let tail = num & ((1 << bits) - 1);
+                let tail = num & ((1u64 << bits) - 1);
                 let real_v = (num as f64) / (1u64 << bits) as f64;
                 if tail == 0 || integer >= 10 {
                     return format!("{:.0}{}", real_v, UNITS[cnt] as char);
@@ -142,6 +146,10 @@ impl FragStat {
             }
         };
 
+        if self.count == 0 {
+            writeln!(f, "  Count: 0")?;
+            return Ok(());
+        }
         writeln!(
             f,
             "  Count: {}, Min: {}, Max: {}, Avg: {}",
@@ -150,9 +158,6 @@ impl FragStat {
             scale.scale(self.max),
             scale.scale(self.avg()),
         )?;
-        if self.count == 0 {
-            return Ok(());
-        }
         writeln!(f, "  Distribution:")?;
         for (i, &cnt) in self.bins.iter().enumerate() {
             if cnt > 0 {
@@ -286,7 +291,10 @@ impl CompsizeStat {
             "Uncompressed",
             "Referenced",
         )?;
-        let total_percentage = total_disk * 100 / total_uncomp;
+        let total_percentage = total_disk
+            .checked_mul(100)
+            .and_then(|v| v.checked_div(total_uncomp))
+            .unwrap_or(0);
         write_table(
             f,
             "TOTAL",
