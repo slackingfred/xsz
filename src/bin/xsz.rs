@@ -22,7 +22,7 @@ use xsz::{
     },
     executor::block_on,
     fs_util::File_,
-    global::{config, get_err},
+    global::{config, get_err, set_err},
     scan_tree, spawn,
     taskpak::TaskPak,
     walkdir::WalkDir,
@@ -446,8 +446,15 @@ fn main() {
         use xsz::fs_util::find_subvol_root;
         let mut roots = HashSet::new();
         for arg in &config().args {
-            if let Ok(root) = find_subvol_root(arg) {
-                roots.insert(root);
+            match find_subvol_root(arg) {
+                Ok(root) => {
+                    roots.insert(root);
+                }
+                Err(e) => {
+                    if set_err().is_ok() {
+                        eprintln!("{}: cannot find btrfs subvolume root: {}", arg.display(), e);
+                    }
+                }
             }
         }
         let roots: Arc<Vec<PathBuf>> = Arc::new(roots.into_iter().collect());

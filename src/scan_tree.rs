@@ -25,7 +25,9 @@ pub async fn scan_subvol<S: Sink<Item = ExtentInfo>>(
         Mode::RUSR,
     )
     .map_err(|e| {
-        eprintln!("Failed to open '{}': {}", subvol_path.display(), e);
+        if set_err().is_ok() {
+            eprintln!("Failed to open '{}': {}", subvol_path.display(), e);
+        }
     })?;
 
     let mut sv2 = Sv2Wrapper::new(Box::new(Sv2Args::from_sk(IoctlSearchKey::new(

@@ -2,13 +2,13 @@ use std::{
     io,
     num::NonZeroU64,
     os::fd::{AsFd, BorrowedFd, OwnedFd},
-    path::{Path, PathBuf},
+    path::{Path, PathBuf, absolute},
     sync::Arc,
 };
 
 use rustix::{
     fs::{Mode, OFlags, fstat, open, stat},
-    io::Result,
+    io::{Errno, Result},
 };
 
 pub(crate) type DevId = NonZeroU64;
@@ -19,12 +19,18 @@ pub(crate) fn get_dev(path: impl AsRef<Path>) -> io::Result<DevId> {
 
 /// Walk up the directory tree from `path` until we find the btrfs
 /// subvolume root (inode 256).  Returns the subvolume root path.
-pub fn find_subvol_root(path: &Path) -> Result<PathBuf> {
+///
+/// `path` is made absolute first: `Path::parent()` returns an empty path
+/// (not `.`) for a single-component relative path, so walking up from a
+/// relative argument would try to open `""` and fail immediately instead
+/// of reaching the filesystem root.
+pub fn find_subvol_root(path: &Path) -> io::Result<PathBuf> {
+    let path = absolute(path)?;
     let mut cur = if path.is_dir() {
-        path.to_path_buf()
+        path
     } else {
         path.parent()
-            .map(|p| p.to_path_buf())
+            .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("/"))
     };
     loop {
@@ -38,7 +44,7 @@ pub fn find_subvol_root(path: &Path) -> Result<PathBuf> {
             break;
         }
     }
-    Err(rustix::io::Errno::NOENT)
+    Err(io::Error::from(Errno::NOENT))
 }
 
 pub struct File_ {
