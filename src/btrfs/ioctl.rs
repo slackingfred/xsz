@@ -23,6 +23,7 @@ pub struct IoctlSearchKey {
 }
 
 impl IoctlSearchKey {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tree_id: u64,
         min_objectid: u64,

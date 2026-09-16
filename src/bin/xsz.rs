@@ -3,7 +3,7 @@ use std::{
     fmt::Display,
     io::{Write, stdout},
     num::NonZeroU64,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::exit,
     sync::{
         Arc,
@@ -367,6 +367,12 @@ impl Collector {
     }
 }
 
+impl Default for Collector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Actor for Collector {
     type Message = Box<[ExtentInfo]>;
 
@@ -432,7 +438,7 @@ fn main() {
         use xsz::fs_util::find_subvol_root;
         let mut roots = HashSet::new();
         for arg in &config().args {
-            if let Ok(root) = find_subvol_root(Path::new(arg)) {
+            if let Ok(root) = find_subvol_root(arg) {
                 roots.insert(root);
             }
         }
@@ -451,11 +457,8 @@ fn main() {
                         break;
                     }
                     let sink = S(TaskPak::new(sender.clone()));
-                    match scan_tree::scan_subvol(sink, &roots[idx]).await {
-                        Ok(cnt) => {
-                            nfile.fetch_add(cnt, Ordering::Relaxed);
-                        }
-                        Err(()) => {}
+                    if let Ok(cnt) = scan_tree::scan_subvol(sink, &roots[idx]).await {
+                        nfile.fetch_add(cnt, Ordering::Relaxed);
                     }
                 }
             });

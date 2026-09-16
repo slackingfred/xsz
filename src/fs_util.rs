@@ -14,10 +14,7 @@ use rustix::{
 pub(crate) type DevId = NonZeroU64;
 pub(crate) fn get_dev(path: impl AsRef<Path>) -> io::Result<DevId> {
     let dev = stat(path.as_ref())?.st_dev;
-    NonZeroU64::new(dev).ok_or(io::Error::new(
-        io::ErrorKind::Other,
-        "unexpected device id 0 from stat",
-    ))
+    NonZeroU64::new(dev).ok_or(io::Error::other("unexpected device id 0 from stat"))
 }
 
 /// Walk up the directory tree from `path` until we find the btrfs

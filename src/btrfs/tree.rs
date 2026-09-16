@@ -153,6 +153,14 @@ pub mod r#type {
 pub trait TreeItem {
     const TYPE: u8;
     fn raw_size(&self) -> u32;
+    /// Decode an item from its raw little-endian on-disk representation.
+    ///
+    /// # Safety
+    ///
+    /// `buf` must contain a complete, correctly encoded item of this type
+    /// (at least [`Self::raw_size`] bytes for fixed-size items, or the
+    /// inline header size otherwise). Implementations read the fields with
+    /// unaligned loads and do not validate alignment or trailing bytes.
     unsafe fn from_le_raw(buf: &[u8]) -> Self;
 }
 

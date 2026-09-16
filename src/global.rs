@@ -1,5 +1,6 @@
 use std::{
     hint::cold_path,
+    path::PathBuf,
     process::exit,
     sync::{
         LazyLock,
@@ -35,7 +36,7 @@ pub struct Config {
     #[arg(short = 't', long)]
     pub tree_scan: bool,
     #[arg(required = true, value_name = "file-or-dir")]
-    pub args: Vec<String>,
+    pub args: Vec<PathBuf>,
 }
 impl Config {
     fn from_args() -> Self {

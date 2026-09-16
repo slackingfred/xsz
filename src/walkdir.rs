@@ -1,19 +1,17 @@
 use std::{
     collections::{HashMap, VecDeque, hash_map::Entry},
+    ffi::OsStr,
     hint::cold_path,
     io::{self, ErrorKind},
     marker::Send,
-    os::fd::OwnedFd,
+    os::{fd::OwnedFd, unix::ffi::OsStrExt},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use kanal::{AsyncSender as Sender, bounded_async as bounded};
 use nohash::BuildNoHashHasher;
-use rustix::{
-    fs::{Dir, Mode, OFlags, open},
-    path::Arg,
-};
+use rustix::fs::{Dir, Mode, OFlags, open};
 
 use crate::{
     actor::{Actor, Runnable as _, Sink},
@@ -293,9 +291,8 @@ where
                 }
 
                 let file_type = entry.file_type();
-                let path = dir_path
-                    .join(entry.file_name().as_str().unwrap())
-                    .into_boxed_path();
+                let file_name = OsStr::from_bytes(entry.file_name().to_bytes());
+                let path = dir_path.join(file_name).into_boxed_path();
 
                 if file_type.is_dir() {
                     let dir_dev = match get_dev(&path) {
