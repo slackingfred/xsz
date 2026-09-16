@@ -1,4 +1,10 @@
-use std::{hint::cold_path, iter::FusedIterator, marker::PhantomData, os::fd::BorrowedFd};
+use std::{
+    fmt::{self, Display},
+    hint::cold_path,
+    iter::FusedIterator,
+    marker::PhantomData,
+    os::fd::BorrowedFd,
+};
 
 use ioctl::{BTRFS_IOCTL_SEARCH_V2, SearchHeader, Sv2Args};
 use rustix::{
@@ -15,6 +21,37 @@ pub struct IoctlSearchItem<T> {
     pub(crate) header: SearchHeader,
     pub(crate) item: T,
 }
+
+/// Error produced while iterating a `BTRFS_IOCTL_SEARCH_V2` result set.
+#[derive(Debug)]
+pub enum SearchError {
+    /// The `SEARCH_V2` ioctl itself failed.
+    Io(Errno),
+    /// The kernel returned an item whose raw bytes cannot be decoded.
+    Malformed(&'static str),
+}
+
+impl SearchError {
+    /// OS error code for [`SearchError::Io`], `None` for malformed items.
+    #[inline]
+    pub fn raw_os_error(&self) -> Option<i32> {
+        match self {
+            SearchError::Io(e) => Some(e.raw_os_error()),
+            SearchError::Malformed(_) => None,
+        }
+    }
+}
+
+impl Display for SearchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SearchError::Io(e) => Display::fmt(e, f),
+            SearchError::Malformed(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for SearchError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct SizeStat {
@@ -91,11 +128,6 @@ impl IoctlSearchItem<ExtentData> {
                     refd: ram_bytes,
                 },
             }));
-        }
-        if hlen != self.item.raw_size() {
-            cold_path();
-            let errmsg = format!("Regular extent's header not 53 bytes ({}) long?!?", hlen);
-            return Err(errmsg);
         }
         let disk_bytenr = self.item.disk_bytenr;
         // is hole
@@ -242,13 +274,17 @@ pub struct Sv2ItemIter<'inner, 'fd, T> {
     _phantom: PhantomData<T>,
 }
 impl<T: TreeItem> Iterator for Sv2ItemIter<'_, '_, T> {
-    type Item = Result<IoctlSearchItem<T>, Errno>;
+    type Item = Result<IoctlSearchItem<T>, SearchError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let (header, buf) = match self.inner.next(self.fd)? {
             Ok((header, buf)) => (header, buf),
-            Err(e) => return Some(Err(e)),
+            Err(e) => return Some(Err(SearchError::Io(e))),
         };
+        if let Err(msg) = T::validate(buf) {
+            cold_path();
+            return Some(Err(SearchError::Malformed(msg)));
+        }
         let item = unsafe { T::from_le_raw(buf) };
         let ret = IoctlSearchItem { header, item };
         Some(Ok(ret))

@@ -70,6 +70,12 @@ pub async fn scan_subvol<S: Sink<Item = ExtentInfo>>(
             continue;
         }
 
+        if let Err(msg) = ExtentData::validate(buf) {
+            cold_path();
+            set_err()?;
+            eprintln!("{}", msg);
+            break;
+        }
         let ext_data = unsafe { ExtentData::from_le_raw(buf) };
         let item = IoctlSearchItem {
             header,

@@ -39,7 +39,7 @@ impl<S: Sink<Item = ExtentInfo>> Worker<S> {
                 Ok(extent) => extent,
                 Err(e) => {
                     set_err()?;
-                    if e.raw_os_error() == 25 {
+                    if e.raw_os_error() == Some(25) {
                         eprintln!(
                             "{}: Not btrfs (or SEARCH_V2 unsupported)",
                             f.path().display()

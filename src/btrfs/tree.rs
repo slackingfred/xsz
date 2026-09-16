@@ -1,4 +1,4 @@
-use std::{fmt::Display, mem::transmute};
+use std::{fmt::Display, hint::cold_path, mem::transmute};
 
 #[repr(C, packed)]
 pub struct Key {
@@ -153,14 +153,19 @@ pub mod r#type {
 pub trait TreeItem {
     const TYPE: u8;
     fn raw_size(&self) -> u32;
+    /// Validate that `buf` has the exact length expected for an item of
+    /// this type, *before* it is handed to [`Self::from_le_raw`].
+    ///
+    /// Returning `Err` lets callers surface an ordinary parse error instead
+    /// of panicking (or reading out of bounds) on a malformed kernel reply.
+    fn validate(buf: &[u8]) -> Result<(), &'static str>;
     /// Decode an item from its raw little-endian on-disk representation.
     ///
     /// # Safety
     ///
-    /// `buf` must contain a complete, correctly encoded item of this type
-    /// (at least [`Self::raw_size`] bytes for fixed-size items, or the
-    /// inline header size otherwise). Implementations read the fields with
-    /// unaligned loads and do not validate alignment or trailing bytes.
+    /// `buf` must have passed [`Self::validate`]. Implementations read the
+    /// fields with unaligned loads and do not validate alignment or the
+    /// extent type, so the caller must guarantee both.
     unsafe fn from_le_raw(buf: &[u8]) -> Self;
 }
 
@@ -236,10 +241,13 @@ pub struct ExtentData {
 }
 
 impl ExtentData {
+    /// Size of the fixed header that precedes any inline payload.
     pub const fn inline_header_size() -> u32 {
         // `disk_bytenr` starts immediately after the inline header fields.
         std::mem::offset_of!(Self, disk_bytenr) as u32
     }
+    /// Size of a non-inline (`Regular`/`Prealloc`) `EXTENT_DATA` item.
+    const REGULAR_SIZE: u32 = Self::inline_header_size() + 8 * 4;
     pub fn is_inline(&self) -> bool {
         ExtentType::Inline == ExtentType::from_u8(self.r#type)
     }
@@ -247,15 +255,39 @@ impl ExtentData {
 
 impl TreeItem for ExtentData {
     const TYPE: u8 = r#type::EXTENT_DATA;
+    /// Validate the raw length and extent type of an `EXTENT_DATA` item.
+    ///
+    /// Inline items carry their payload right after the 21-byte header, so
+    /// only the header itself is required; `Regular`/`Prealloc` items are
+    /// exactly 53 bytes. A malformed kernel reply is reported as an error
+    /// rather than causing an out-of-bounds read in [`Self::from_le_raw`].
+    fn validate(buf: &[u8]) -> Result<(), &'static str> {
+        let header = Self::inline_header_size() as usize;
+        if buf.len() < header {
+            return Err("EXTENT_DATA: item shorter than inline header");
+        }
+        let ty = buf[std::mem::offset_of!(Self, r#type)];
+        if ty > ExtentType::Prealloc as u8 {
+            return Err("EXTENT_DATA: unknown extent type");
+        }
+        if ty == ExtentType::Inline as u8 && buf.len() > header {
+            return Ok(());
+        }
+        if buf.len() == Self::REGULAR_SIZE as usize {
+            return Ok(());
+        }
+        cold_path();
+        return Err("EXTENT_DATA: unexpected item length");
+    }
     fn raw_size(&self) -> u32 {
         if self.is_inline() {
             return Self::inline_header_size();
         }
-        Self::inline_header_size() + 8 * 4
+        Self::REGULAR_SIZE
     }
     unsafe fn from_le_raw(buf: &[u8]) -> Self {
         let mut ptr = buf.as_ptr();
-        assert!(buf.len() >= Self::inline_header_size() as usize);
+        debug_assert!(buf.len() >= Self::inline_header_size() as usize);
         unsafe {
             let generation = ptr.cast::<u64>().read_unaligned().to_le();
             ptr = ptr.add(8);
@@ -302,7 +334,7 @@ impl TreeItem for ExtentData {
                 offset,
                 num_bytes,
             };
-            assert!(buf.len() == ret.raw_size() as usize);
+            debug_assert_eq!(buf.len(), ret.raw_size() as usize);
             ret
         }
     }
