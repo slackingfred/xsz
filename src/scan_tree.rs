@@ -10,6 +10,7 @@ use crate::{
         tree::{self, ExtentData, TreeItem},
     },
     global::{get_err, set_err},
+    subvol,
 };
 
 /// Scan a btrfs subvolume's tree for all EXTENT_DATA items,
@@ -27,6 +28,14 @@ pub async fn scan_subvol<S: Sink<Item = ExtentInfo>>(
     .map_err(|e| {
         if set_err().is_ok() {
             eprintln!("Failed to open '{}': {}", subvol_path.display(), e);
+        }
+    })?;
+
+    // Learn the snapshot family of this subvolume before counting any of
+    // its inline extents.
+    let (dev, _) = subvol::register_fd(fd.as_fd()).map_err(|e| {
+        if set_err().is_ok() {
+            eprintln!("{}: GET_SUBVOL_INFO: {}", subvol_path.display(), e);
         }
     })?;
 
@@ -84,7 +93,7 @@ pub async fn scan_subvol<S: Sink<Item = ExtentInfo>>(
             item: ext_data,
         };
 
-        match item.parse() {
+        match item.parse(dev) {
             Ok(Some(extent)) => {
                 if header.objectid != last_ino {
                     nfile += 1;

@@ -23,7 +23,7 @@ use xsz::{
     executor::block_on,
     fs_util::File_,
     global::{config, get_err, set_err},
-    scan_tree, spawn,
+    scan_tree, spawn, subvol,
     taskpak::TaskPak,
     walkdir::WalkDir,
     worker::Worker,
@@ -324,10 +324,13 @@ fn write_table(
 
 pub struct Collector {
     stat: Box<dyn ExtentInfoSink>,
+    /// Every extent item seen (regular + inline, duplicates included).
     nextent: u64,
-    ninline: u64,
+    /// Every inline extent item seen: the "inline refs" count.
+    ninline_total: u64,
+    /// Inline inodes not yet seen in their subvolume family.
+    ninline_unique: u64,
     extent_set: IntSet<u64>,
-    inline_ino_set: IntSet<u64>,
 }
 
 impl Collector {
@@ -340,19 +343,10 @@ impl Collector {
         Self {
             stat,
             nextent: 0,
-            ninline: 0,
+            ninline_total: 0,
+            ninline_unique: 0,
             extent_set: Default::default(),
-            inline_ino_set: Default::default(),
         }
-    }
-    pub fn nextent_unique(&self) -> u64 {
-        self.extent_set.len() as _
-    }
-    pub fn nextent(&self) -> u64 {
-        self.nextent
-    }
-    pub fn ninline(&self) -> u64 {
-        self.ninline
     }
     pub fn fmt(&self, f: &mut dyn Write, nfile: u64) -> std::io::Result<()> {
         if nfile == 0 {
@@ -365,11 +359,12 @@ impl Collector {
         }
         writeln!(
             f,
-            "Processed {} files, {} regular extents ({} refs), {} inline.",
+            "Processed {} files, {} regular extents ({} refs), {} inline ({} refs).",
             nfile,
-            self.nextent_unique(),
-            self.nextent - self.ninline,
-            self.ninline,
+            self.extent_set.len(),
+            self.nextent - self.ninline_total,
+            self.ninline_unique,
+            self.ninline_total,
         )?;
         self.stat.fmt(f, config().bytes)
     }
@@ -390,8 +385,11 @@ impl Actor for Collector {
             self.nextent += 1;
             let bytenr = extent.disk_bytenr();
             if bytenr == 0 {
-                if self.inline_ino_set.insert(extent.objectid()) {
-                    self.ninline += 1;
+                // Inline extents have no physical address of their own, so
+                // dedup by (subvolume family, inode) instead of bytenr.
+                self.ninline_total += 1;
+                if subvol::inline_seen(extent.dev(), extent.objectid()) {
+                    self.ninline_unique += 1;
                     self.stat.unique(&extent);
                 } else {
                     self.stat.duplic(&extent);

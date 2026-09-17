@@ -4,6 +4,7 @@ pub mod executor;
 pub mod fs_util;
 pub mod global;
 pub mod scan_tree;
+pub mod subvol;
 pub mod taskpak;
 pub mod walkdir;
 pub mod worker;

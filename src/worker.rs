@@ -50,7 +50,7 @@ impl<S: Sink<Item = ExtentInfo>> Worker<S> {
                     break;
                 }
             };
-            match extent.parse() {
+            match extent.parse(f.dev()) {
                 Ok(Some(extent)) => {
                     self.sink.consume(extent).await;
                 }

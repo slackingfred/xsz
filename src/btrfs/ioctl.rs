@@ -1,7 +1,11 @@
-use rustix::ioctl::{Opcode, opcode::read_write};
+use rustix::ioctl::{
+    Opcode,
+    opcode::{read, read_write},
+};
 
 pub const BTRFS_IOCTL_MAGIC: u8 = 0x94;
 pub const BTRFS_IOCTL_SEARCH_V2: Opcode = read_write::<Sv2Args>(BTRFS_IOCTL_MAGIC, 17);
+pub const BTRFS_IOC_GET_SUBVOL_INFO: Opcode = read::<GetSubvolInfoArgs>(BTRFS_IOCTL_MAGIC, 60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct IoctlSearchKey {
@@ -96,5 +100,67 @@ impl SearchHeader {
     #[inline]
     pub unsafe fn from_raw(buf: &[u8]) -> Self {
         unsafe { buf.as_ptr().cast::<Self>().read_unaligned() }
+    }
+}
+
+#[repr(C)]
+struct Timespec {
+    sec: u64,
+    nsec: u32,
+}
+
+/// Mirrors the kernel's `struct btrfs_ioctl_get_subvol_info_args`.
+///
+/// The exact size and field offsets matter: [`BTRFS_IOC_GET_SUBVOL_INFO`]
+/// encodes `size_of::<Self>()` in `_IOC_SIZE`, and the kernel dispatches on
+/// the whole command word (unlike `SEARCH_V2`, there is no modulus trick
+/// here).  The asserts below pin the layout to the `linux/btrfs.h`
+/// definition, so a future edit that breaks it fails at compile time
+/// instead of with `ENOTTY` at runtime.
+#[repr(C)]
+pub struct GetSubvolInfoArgs {
+    treeid: u64,
+    name: [u8; 256], // BTRFS_VOL_NAME_MAX + 1
+    parent_id: u64,
+    dirid: u64,
+    generation: u64,
+    flags: u64,
+    pub(crate) uuid: [u8; 16],
+    pub(crate) parent_uuid: [u8; 16],
+    received_uuid: [u8; 16],
+    ctransid: u64,
+    otransid: u64,
+    stransid: u64,
+    rtransid: u64,
+    ctime: Timespec,
+    otime: Timespec,
+    stime: Timespec,
+    rtime: Timespec,
+    reserved: [u64; 8],
+}
+
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(size_of::<Timespec>() == 16);
+    assert!(size_of::<GetSubvolInfoArgs>() == 504);
+    assert!(offset_of!(GetSubvolInfoArgs, uuid) == 296);
+    assert!(offset_of!(GetSubvolInfoArgs, parent_uuid) == 312);
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin both command words against `include/uapi/linux/btrfs.h`.
+    ///
+    /// `SEARCH_V2` is the subtle one: `Sv2Args` inlines a 16 KiB buffer, so
+    /// `size_of::<Sv2Args>()` is 16496 and only collapses back to the
+    /// kernel's expected 112 because `_IOC_SIZE` is 14 bits wide.  Changing
+    /// the buffer to a non-multiple of 16384 would silently send a different
+    /// command and fail with `ENOTTY`; this test catches that.
+    #[test]
+    fn ioctl_commands_match_kernel() {
+        assert_eq!(BTRFS_IOC_GET_SUBVOL_INFO, 0x81f8_943c);
+        assert_eq!(BTRFS_IOCTL_SEARCH_V2, 0xc070_9411);
     }
 }

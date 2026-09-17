@@ -67,12 +67,41 @@ are consistent between modes. The "Referenced" column will differ when
 hardlinks exist: walkdir counts each path's reference separately, while
 tree-scan counts each extent once.
 
-**Inline extent dedup** deduplicates by inode number only. This works
-correctly for hardlinks and snapshots (same inode = same data), but may
-under-count if the same inode number happens to appear in different
-subvolumes for unrelated files.
+**Inline extent dedup** groups subvolumes into snapshot families (using the
+`uuid`/`parent_uuid` lineage reported by `BTRFS_IOC_GET_SUBVOL_INFO`) and
+deduplicates inline extents by `(family, inode)`. This collapses hardlinks
+and snapshots (same inode = same inline data) while keeping unrelated
+subvolumes separate — the latter matters because every btrfs subvolume
+numbers its inodes from 256, so an inode-only key collides across them
+routinely. Inode number reuse *within* a snapshot family can still cause a
+small under-count.
+
+**Summary line** reports both unique extents and references, for regular and
+inline data alike:
+
+```
+Processed N files, X regular extents (Y refs), A inline (B refs).
+```
 
 ## Changelog
+
+### Unreleased
+
+- **Inline dedup across subvolumes**: inline extents are now deduplicated
+  by `(snapshot family, inode)` instead of inode alone, so unrelated
+  subvolumes no longer collide. Snapshot families come from
+  `BTRFS_IOC_GET_SUBVOL_INFO`.
+- **Inline extents with a payload are accepted again**: `EXTENT_DATA`
+  validation demanded an inline item be exactly the 21-byte header, which
+  rejected every non-empty inline extent and aborted the run.
+- **Non-btrfs mounts are skipped**: a directory whose
+  `BTRFS_IOC_GET_SUBVOL_INFO` reports no btrfs subvolume (a bind mount of
+  another filesystem, or a snapshot's stub for a nested subvolume) is no
+  longer descended into. Previously that aborted the whole run.
+- **Output**: the summary line now also reports the inline reference count:
+  `Processed N files, X regular extents (Y refs), A inline (B refs).`
+  (The `Processed ... inline.` lines in the benchmarks below predate this
+  field.)
 
 ### 0.5.0 — 2026-06-29
 

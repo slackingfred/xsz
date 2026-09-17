@@ -51,12 +51,13 @@ pub struct File_ {
     fd: Arc<OwnedFd>,
     path: Box<Path>,
     ino: u64,
+    dev: u64,
 }
 
 impl File_ {
     #[inline]
-    pub fn new(fd: Arc<OwnedFd>, path: Box<Path>, ino: u64) -> Self {
-        Self { fd, path, ino }
+    pub fn new(fd: Arc<OwnedFd>, path: Box<Path>, ino: u64, dev: u64) -> Self {
+        Self { fd, path, ino, dev }
     }
     #[inline]
     pub fn borrow_fd(&self) -> BorrowedFd<'_> {
@@ -67,13 +68,18 @@ impl File_ {
         self.ino
     }
     #[inline]
+    pub fn dev(&self) -> u64 {
+        self.dev
+    }
+    #[inline]
     pub fn path(&self) -> &Path {
         &self.path
     }
     pub fn from_path(p: Box<Path>) -> Result<Self> {
         let fd = Arc::new(open(p.as_ref(), OFlags::NOFOLLOW, Mode::RUSR)?);
+        let (dev, _) = crate::subvol::register_fd(fd.as_fd())?;
         let stat = fstat(fd.as_fd())?;
         let ino = stat.st_ino;
-        Ok(Self::new(fd, p, ino))
+        Ok(Self::new(fd, p, ino, dev))
     }
 }

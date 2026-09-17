@@ -4,7 +4,10 @@ use std::{
     hint::cold_path,
     io::{self, ErrorKind},
     marker::Send,
-    os::{fd::OwnedFd, unix::ffi::OsStrExt},
+    os::{
+        fd::{AsFd, OwnedFd},
+        unix::ffi::OsStrExt,
+    },
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -17,7 +20,7 @@ use crate::{
     actor::{Actor, Runnable as _, Sink},
     fs_util::{DevId, File_, get_dev},
     global::{config, get_err},
-    spawn,
+    spawn, subvol,
 };
 
 const MAX_LOCAL_LEN: usize = 4096 / size_of::<Box<Path>>();
@@ -36,6 +39,12 @@ impl JobChunk {
             OFlags::DIRECTORY | OFlags::NOFOLLOW,
             Mode::RUSR,
         )?;
+        // Learn this subvolume's snapshot lineage before any of its files
+        // are handed to a worker.  Refuse a top-level arg that is not
+        // searchable at all instead of failing on every file below it.
+        if subvol::register_fd(fd.as_fd())?.1 == subvol::Support::Unsupported {
+            return Err(io::Error::other("not a btrfs subvolume"));
+        }
         Ok(Self {
             dev,
             wq: SubvolWQ {
@@ -313,6 +322,17 @@ where
                         ) else {
                             continue;
                         };
+                        // A non-btrfs bind mount (or a snapshot's stub for
+                        // a nested subvolume) cannot be searched; descending
+                        // would only abort the run on the first file.
+                        match subvol::register_fd(fd.as_fd()) {
+                            Ok((_, subvol::Support::Btrfs)) => {}
+                            Ok((_, subvol::Support::Unsupported)) => continue,
+                            Err(e) => {
+                                eprintln!("{}: {}", path.display(), e);
+                                continue;
+                            }
+                        }
                         newfs_dirs.push(JobChunk {
                             dev: dir_dev,
                             wq: SubvolWQ {
@@ -324,7 +344,7 @@ where
                 } else if file_type.is_file() || file_type.is_symlink() {
                     // Symlink targets are stored as inline EXTENT_DATA in btrfs.
                     self.file_handler
-                        .consume(File_::new(fd.clone(), path, entry.ino()))
+                        .consume(File_::new(fd.clone(), path, entry.ino(), dev.get()))
                         .await;
                 }
             }

@@ -78,11 +78,19 @@ pub struct ExtentInfo {
     r#type: ExtentType,
     compression: Compression,
     stat: SizeStat,
+    /// Device number of the subvolume this extent belongs to (per-subvolume
+    /// anonymous `st_dev`).  Only consulted for inline extents; regular ones
+    /// dedup by `disk_bytenr`.
+    dev: u64,
 }
 
 impl ExtentInfo {
     pub fn objectid(&self) -> u64 {
         self.objectid
+    }
+
+    pub fn dev(&self) -> u64 {
+        self.dev
     }
 
     pub fn offset(&self) -> u64 {
@@ -107,7 +115,7 @@ impl ExtentInfo {
 }
 
 impl IoctlSearchItem<ExtentData> {
-    pub fn parse(&self) -> Result<Option<ExtentInfo>, String> {
+    pub fn parse(&self, dev: u64) -> Result<Option<ExtentInfo>, String> {
         let hlen = self.header.len;
         let ram_bytes = self.item.ram_bytes;
         let compression = Compression::from_u8(self.item.compression);
@@ -127,6 +135,7 @@ impl IoctlSearchItem<ExtentData> {
                     uncomp: ram_bytes,
                     refd: ram_bytes,
                 },
+                dev,
             }));
         }
         let disk_bytenr = self.item.disk_bytenr;
@@ -155,6 +164,7 @@ impl IoctlSearchItem<ExtentData> {
                 uncomp: ram_bytes,
                 refd: refd_bytes,
             },
+            dev,
         }))
     }
 }
@@ -308,5 +318,49 @@ impl<'inner, 'fd, T: TreeItem> Sv2ItemIter<'inner, 'fd, T> {
             fd,
             _phantom: PhantomData,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::btrfs::{ioctl::SearchHeader, tree::ExtentData};
+
+    /// Build an inline `EXTENT_DATA` item of `payload` bytes.
+    fn inline_item(payload: usize, ram_bytes: u64) -> Vec<u8> {
+        let header = ExtentData::inline_header_size() as usize;
+        let mut buf = vec![0u8; header + payload];
+        buf[8..16].copy_from_slice(&ram_bytes.to_le_bytes());
+        buf
+    }
+
+    /// Regression test for inline extents carrying a payload: they must be
+    /// accepted and their payload length used as `disk`, not rejected for
+    /// being longer than the fixed header.
+    #[test]
+    fn inline_extent_with_payload_parses() {
+        let payload = 137usize;
+        let ram_bytes = 200u64;
+        let buf = inline_item(payload, ram_bytes);
+        ExtentData::validate(&buf).unwrap();
+
+        let item = IoctlSearchItem {
+            header: SearchHeader {
+                transid: 1,
+                objectid: 42,
+                offset: 0,
+                r#type: crate::btrfs::tree::r#type::EXTENT_DATA as u32,
+                len: buf.len() as u32,
+            },
+            item: unsafe { ExtentData::from_le_raw(&buf) },
+        };
+        let extent = item.parse(7).unwrap().unwrap();
+        assert_eq!(extent.objectid(), 42);
+        assert_eq!(extent.dev(), 7);
+        assert_eq!(extent.disk_bytenr(), 0);
+        assert_eq!(extent.r#type(), ExtentType::Inline);
+        assert_eq!(extent.stat().disk, payload as u64);
+        assert_eq!(extent.stat().uncomp, ram_bytes);
+        assert_eq!(extent.stat().refd, ram_bytes);
     }
 }
