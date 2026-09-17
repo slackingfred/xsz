@@ -349,3 +349,55 @@ pub struct DirItem {
     r#type: u8,
     name: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a raw item of `len` bytes with the two discriminators set.
+    /// Fields beyond `len` are simply not written, mimicking a truncated
+    /// or oversized kernel reply.
+    fn item(len: usize, ty: u8, compression: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; len];
+        if len > std::mem::offset_of!(ExtentData, compression) {
+            buf[std::mem::offset_of!(ExtentData, compression)] = compression;
+        }
+        if len > std::mem::offset_of!(ExtentData, r#type) {
+            buf[std::mem::offset_of!(ExtentData, r#type)] = ty;
+        }
+        buf
+    }
+
+    const INLINE: u8 = ExtentType::Inline as u8;
+    const REGULAR: u8 = ExtentType::Regular as u8;
+
+    #[test]
+    fn validate_accepts_well_formed_items() {
+        let inline = ExtentData::inline_header_size() as usize;
+        let regular = ExtentData::REGULAR_SIZE as usize;
+        assert_eq!(ExtentData::validate(&item(inline + 1, INLINE, 0)), Ok(()));
+        assert_eq!(
+            ExtentData::validate(&item(inline + 2048, INLINE, 0)),
+            Ok(())
+        );
+        assert_eq!(ExtentData::validate(&item(regular, REGULAR, 3)), Ok(()));
+        assert_eq!(
+            ExtentData::validate(&item(regular, ExtentType::Prealloc as u8, 1)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_bad_length() {
+        let inline = ExtentData::inline_header_size() as usize;
+        let regular = ExtentData::REGULAR_SIZE as usize;
+        // Shorter than the fixed header.
+        assert!(ExtentData::validate(&item(inline - 1, INLINE, 0)).is_err());
+        // Inline items are `header + payload`; the payload should not be empty.
+        assert!(ExtentData::validate(&item(inline, INLINE, 0)).is_err());
+        // Regular/prealloc items are a fixed size, in both directions.
+        assert!(ExtentData::validate(&item(inline, REGULAR, 0)).is_err());
+        assert!(ExtentData::validate(&item(regular + 1, REGULAR, 0)).is_err());
+        assert!(ExtentData::validate(&item(inline, ExtentType::Prealloc as u8, 1)).is_err());
+    }
+}
