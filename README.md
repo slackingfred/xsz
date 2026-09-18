@@ -65,16 +65,21 @@ This project has not undergone rigorous testing. Use it in production environmen
 walking the directory hierarchy. Disk Usage and Uncompressed numbers
 are consistent between modes. The "Referenced" column will differ when
 hardlinks exist: walkdir counts each path's reference separately, while
-tree-scan counts each extent once.
+tree-scan counts each extent once. Its `Processed N files` value is not
+comparable to `compsize` either; see
+[Behavior differences from `compsize`](#behavior-differences-from-compsize).
 
 **Inline extent dedup** groups subvolumes into snapshot families (using the
 `uuid`/`parent_uuid` lineage reported by `BTRFS_IOC_GET_SUBVOL_INFO`) and
-deduplicates inline extents by `(family, inode)`. This collapses hardlinks
-and snapshots (same inode = same inline data) while keeping unrelated
+deduplicates inline extents by `(family, inode)`, for Disk Usage and
+Uncompressed only — `Referenced` still counts every path. This collapses
+hardlinks and snapshots (same inode = same inline data) while keeping unrelated
 subvolumes separate — the latter matters because every btrfs subvolume
 numbers its inodes from 256, so an inode-only key collides across them
 routinely. Inode number reuse *within* a snapshot family can still cause a
-small under-count.
+small under-count. Because `compsize` performs no such dedup, this is a source
+of difference from it; see
+[Behavior differences from `compsize`](#behavior-differences-from-compsize).
 
 **Summary line** reports both unique extents and references, for regular and
 inline data alike:
@@ -82,6 +87,89 @@ inline data alike:
 ```
 Processed N files, X regular extents (Y refs), A inline (B refs).
 ```
+
+The parenthesized inline value is `compsize`'s own `inline` count; the leading
+one counts distinct inodes — see
+[Behavior differences from `compsize`](#behavior-differences-from-compsize).
+
+## Behavior differences from `compsize`
+
+`xsz` keeps `compsize`'s command line and its per-extent accounting, but it
+deliberately reports a few things differently. Most of the table changes the
+numbers, which is why `Processed N files` can legitimately disagree with
+`compsize` on the same directory.
+
+| Aspect | `compsize` | `xsz` |
+| --- | --- | --- |
+| Symlinks | filtered out of the directory walk (`DT_LNK`) and never counted | counted as files; their inline targets count towards Disk Usage / Uncompressed / Referenced ([details](#file-count)) |
+| Inline extents | added every time the extent is reached, so hardlinks and snapshots are counted repeatedly | deduplicated by `(snapshot family, inode)`: Disk Usage / Uncompressed count the data once, Referenced still counts every path ([details](#inline-extents)) |
+| File count | bumped after a successful `open()`, so unreadable or already-deleted files are skipped | bumped at `readdir` time; `xsz` never opens the file itself ([details](#file-count)) |
+| Unknown compression id / extent type | bucketed and printed as a `?N` row | treated as malformed and aborts the run ([details](#error-handling)) |
+| Non-btrfs directory (bind mount, subvolume stub) | walked into, then aborts on the first file with `Not btrfs` | detected with `GET_SUBVOL_INFO` and skipped ([details](#error-handling)) |
+| Summary line | `... A inline, F fragments.` | `... A inline (B refs).`; no fragment count unless `-F` is used ([details](#output)) |
+| Human-readable sizes | tail dropped (truncated) | rounded ([FAQ](#faq)) |
+
+The rest is meant to match: regular extents are deduplicated by 4K page on
+both sides, holes are skipped on both sides, and `Referenced` counts one
+reference per path for regular and inline data alike.
+
+### File count
+
+`xsz` counts a file as soon as `readdir` returns it (`is_file()` or
+`is_symlink()`), while `compsize` only counts regular files it managed to
+`open()`. Two visible consequences:
+
+- **Symlinks are files to `xsz`.** They are counted in `Processed N files`,
+  and their inline targets (btrfs stores symlink targets as inline
+  `EXTENT_DATA`) contribute to the byte totals. `compsize` ignores them
+  completely: on a symlink-only tree it prints `No files.` where `xsz`
+  reports the number of symlinks.
+- **Unreadable files still count** for `xsz`, because it searches extents by
+  inode through the directory fd instead of opening each file.
+
+In `-t` / `--tree-scan` mode the count has yet another meaning: it is the
+number of distinct inodes with a non-hole `EXTENT_DATA`. Empty or hole-only
+files are therefore not counted, and hardlinks are counted once (see the `-t`
+note in [Important Notes](#important-notes)).
+
+### Inline extents
+
+Both tools agree until the point of aggregation. `compsize` adds an inline
+item's sizes every time it reaches it, so a hardlink, or a snapshot of a file
+with inline data, is counted again for every path. `xsz` deduplicates inline
+extents by `(snapshot family, inode)`: the first encounter adds Disk Usage and
+Uncompressed, later ones only add `Referenced`. On snapshot-heavy trees `xsz`
+therefore reports smaller Disk Usage and Uncompressed than `compsize`, by
+exactly the repeatedly-reached inline data. Regular extents are deduplicated
+by 4K page by both tools, so this only shows up for inline data (small files
+and symlink targets). See the inline-dedup note in
+[Important Notes](#important-notes) for the family logic and its limitations.
+
+### Error handling
+
+`compsize` is deliberately forward-compatible: any compression id is bucketed
+and printed as a `?N` row, so a new algorithm still yields a report. `xsz`
+knows only `none`/`zlib`/`lzo`/`zstd` and treats an unknown id or extent type
+as malformed, aborting the run. Likewise, a directory that is not a searchable
+btrfs subvolume — a bind mount of another filesystem, or the stub a snapshot
+leaves for a nested subvolume — is skipped by `xsz`, whereas `compsize`
+descends and aborts with `Not btrfs (or SEARCH_V2 unsupported)`.
+
+### Output
+
+The summary line is not a drop-in replacement:
+
+```text
+compsize: Processed N files, X regular extents (Y refs), A inline, F fragments.
+xsz:      Processed N files, X regular extents (Y refs), A inline (B refs).
+```
+
+`compsize`'s `A` is the total number of inline items — that is `xsz`'s `B`
+(the parenthesized reference count). `xsz`'s `A` is the number of distinct
+inodes, which `compsize` does not report. Newer `compsize` versions also print
+`F fragments`, a metric `xsz` only exposes through `-F` / `--frag`, as a full
+distribution. Human-readable sizes round in `xsz` and truncate in `compsize`;
+`-b` prints exact bytes in both.
 
 ## Changelog
 
@@ -101,7 +189,8 @@ Processed N files, X regular extents (Y refs), A inline (B refs).
 - **Output**: the summary line now also reports the inline reference count:
   `Processed N files, X regular extents (Y refs), A inline (B refs).`
   (The `Processed ... inline.` lines in the benchmarks below predate this
-  field.)
+  field, and the `compsize` lines predate its own `fragments` field. See
+  [Behavior differences from `compsize`](#behavior-differences-from-compsize).)
 
 ### 0.5.0 — 2026-06-29
 
@@ -181,6 +270,9 @@ A: Yes, and no. We try to have the same cli-arguments with `compsize`, but we ad
    And if you find the result is different from `compsize`,
    it's expected because we do real rounding instead of just drop the tail like `compsize`
    since v0.4.1 release(commit 9549fa5).
+   See [Behavior differences from `compsize`](#behavior-differences-from-compsize)
+   for the full list of intentional differences (symlinks, inline dedup, input
+   errors, ...).
 
 Q: How many worker threads should I set on my machine?
 
